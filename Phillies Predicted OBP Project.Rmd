@@ -1,0 +1,181 @@
+---
+title: "Phillies Baseball R&D Project"
+author: "Eric Bozzi"
+date: "10/29/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(corrplot)
+library(ggcorrplot)
+library(caTools)
+library(reshape2)
+library(imager)
+batting <- read.csv("C:/Users/Admin/Downloads/batting.csv")
+```
+
+## Introduction
+
+My approach to the question of predicting player's Full Season OBP's broke down to 2 major questions. 
+
+First, Utilizing the dataset and parameters set in the instructions, what are we looking for in a real life use for this? 
+
+Second, after obtaining the projected OBP for a full season, how will this be utilized?
+
+To answer the first question, I wanted to look at why are we looking at only March and April statistics and how could this be useful to a research and devlopment office. 
+
+
+## Team OBP To Win Percentages
+
+Most teams have their 1-5 hitters put together. The difference makers when looking at the league as an entirety, has to do with hitters 6-8 and their OBPs. The top 10 teams in OBP from their 6, 7, 8 hitters spanning 2019-2021 were STL, WSN, HOU, LAD, CHW, BOS, MIL, MIN, ATL, CHC.
+
+Conversely, the bottom 5 teams in OBP from their 6, 7, and 8 hitters were KCR, DET, CLE, SEA, TEX. 
+
+What this shows is a potential correlation between win percentage and 6-8 hitter OBP. This is proven in the chart below.
+
+```{r, echo=TRUE}
+wins <- read.csv("C:/Users/Admin/Downloads/team records.csv")
+wins <- wins[,colSums(is.na(wins))<nrow(wins)]
+wins <- wins[complete.cases(wins), ]
+wins <- t(wins)
+wins <- data.frame(r1= row.names(wins), wins, row.names=NULL) 
+colnames(wins)[1] <- "Tm"
+colnames(wins)[2] <- "2021"
+colnames(wins)[3] <- "2020"
+colnames(wins)[4] <- "2019"
+wins <- wins[-c(1), ]
+wins$percent <- rowSums(wins[c(2,3,4)])/ 384
+wins <- wins[c(1,5)]
+bottomorder <- read.csv("C:/Users/Admin/Downloads/Splits Leaderboard Data Batting 7th Batting 8th Batting 6th.csv")
+bottomorder <- bottomorder[c(2, 8)]
+teams <- merge(wins, bottomorder, by = "Tm")
+
+ggplot(teams, aes(x = OBP, y = percent)) +  geom_point() +
+  geom_smooth(method = lm, se = FALSE)
+```
+
+## Analysis on Chart
+
+We see now from the chart that there is a positive correlation. Where this impacts a club is as we get towards the trade deadline or even September Call ups, we can look at players whose project OBP can aid in the bottom of the order and produce to get back to the top of the lineup. This is where we can now look at finding the projected OBP for hitters.
+
+## Project OBP Approach
+My approach for this is to run a linear regression model across the data given in batting document. I also went into FanGraphs and pulled the statcast data from 3/1/2019-4/30/2019 including the following data:
+
+```{r, echo=FALSE}
+exitvelo <- read.csv("C:/Users/Admin/Downloads/FanGraphs Leaderboard (5).csv")
+colnames(exitvelo)[1] <- "Events"
+head(exitvelo)
+```
+With this information merged with the original data set via player ID. My next step was simply taking the percent fields and updating them to be decimals. Below is the code used for that step
+
+```{r, echo=TRUE}
+df <- merge(batting, exitvelo, by = "playerid")
+
+#Change % fields to numeric decimals, merge them back into data frame
+df$MarApr_BB <- as.numeric(sub("%", "", df$MarApr_BB))/100
+df$MarApr_K<- as.numeric(sub("%", "", df$MarApr_K))/100
+df$MarApr_LD <- as.numeric(sub("%", "", df$MarApr_LD))/100
+df$MarApr_GB<- as.numeric(sub("%", "", df$MarApr_GB))/100
+df$MarApr_FB <- as.numeric(sub("%", "", df$MarApr_FB))/100
+df$MarApr_IFFB <- as.numeric(sub("%", "", df$MarApr_IFFB))/100
+df$MarApr_HR.FB <- as.numeric(sub("%", "", df$MarApr_HR.FB))/100
+df$MarApr_O.Swing <- as.numeric(sub("%", "", df$MarApr_O.Swing))/100
+df$MarApr_Z.Swing <- as.numeric(sub("%", "", df$MarApr_Z.Swing))/100
+df$MarApr_Swing <- as.numeric(sub("%", "", df$MarApr_Swing))/100
+df$MarApr_O.Contact <- as.numeric(sub("%", "", df$MarApr_O.Contact))/100
+df$MarApr_Z.Contact <- as.numeric(sub("%", "", df$MarApr_Z.Contact))/100
+df$MarApr_Contact <- as.numeric(sub("%", "", df$MarApr_Contact))/100
+
+df <- df[-c(11,12,18:28)]
+
+```
+## Moving Toward Model
+
+The final pieces prior to creating the model were to extract the numeric columns only (i.e remove Team and Name). Then Scale/Normalize all stats except for FullSeason_OBP
+
+```{r, echo=TRUE}
+#Only Numeric Columns in df2, also remove playerid
+batters <- df %>% dplyr::select(where(is.numeric))
+#Remove ID Column
+batters <- batters[-c(1)]
+
+#Scale all but full season OBP
+batters[, -c(13)] <- scale(batters[, -c(13)])
+
+```
+## Building The First Model
+Like I mentioned, I first wanted to check a simple linear model to test. This went through many iterations. Including removal of outliers from the dataset, normalizing and not normalizing the data, multiple tests of different models like Decision Tree Regression and KNN (K-Nearest Neighbors). This simple linear model however gave the best R^2^ and that will be shown below.
+
+```{r, echo=TRUE}
+#Model 1 to compare Dependent Variable FullSeason_OBP to all variables
+model1 <- lm(FullSeason_OBP ~ ., data = batters)
+summary(model1)
+```
+
+I was not satisfied yet. I then used the step method. As described in this article: https://bit.ly/3pTYuTF
+
+From there I could elimante some of the independant variables to get a better model fit on the data.
+
+```{r, echo=TRUE, results='hide'}
+model2 <- step(model1, direction = "backward")
+```
+
+```{r, echo=TRUE}
+model3 <- lm(FullSeason_OBP ~ MarApr_BABIP + MarApr_AVG + MarApr_SLG +  MarApr_O.Swing + MarApr_O.Contact + EV +
+               Events + MarApr_Swing + MarApr_K + MarApr_Z.Swing + MarApr_Z.Contact + MarApr_Contact + MarApr_AB +
+               MarApr_H + MarApr_PA,
+             data = batters)
+
+summary(model3)
+```
+
+## Findings
+As we can see, with an Adjusted R^2^ of 0.4926. We have a close to 50% accuracy on this model. The highest I could attain. At this point, we can look into the predictions.
+
+```{r, echo=TRUE}
+final <- df
+final$PredictedOBP <- predict(model3, batters)
+final$OBPdiff <- final$PredictedOBP - final$FullSeason_OBP
+```
+```{r, echo=TRUE}
+final1 <- final[c(2,16,36,37)]
+head(arrange(final1,desc(PredictedOBP)), n = 10)
+```
+The final column shows the difference between The predicted OBP compared to the Actual FullSeason OBP
+
+The graph of this data would look like this:
+```{r, echo=TRUE}
+ggplot(final1, aes(x = FullSeason_OBP, y = PredictedOBP)) +  geom_point() +
+  geom_smooth(method = lm, se = FALSE)
+```
+This is just one example of a chart explaining the story of matching the projected OBP to the Actual OBP for the full season.
+Below are charts based off the models including the residuals vs Fitted, Normal Q-Q, Scale Location, and Residuals vs Leverage. By no means is this a perfect model, however it can accurately predict a Full Season OBP for the players. 
+```{r, echo=TRUE}
+plot(model3)
+```
+## Review Of The Charts
+1) Residuals vs Fitted:
+On this chart we notice the residuals bounce somewhat randomly across the 0 set line (Horizontal line). What this can tell us is the relationship does have a linear pattern and the variances of the error terms look equal. We do see 3 points highlighted with numbers. 19, 86, 180. These correspond to outliers in the data set, but is limited to just a minimal 3 which does not have a major affect on the distribution of the chart. In short, we safely can determine there is no non-constant variance. 
+2) Normal Q-Q:
+The QQ plot is being used here to determine whether the distribution of the data set are similar. Due to it being light on each end with only a few points deviating from the line, we can determine that this set of data has a normal distribution across the residuals and the quantiles set.
+3) Scale-Location
+To determine if the scale location has heteroscedasticity (constant variance) we need to see how straight the red line is. These points would preferably be scatted equidistant across the chart where it makes the red line flat. We are on the right path since as we hit approximately 0.325 on the fitted values it flattens out the curve. The point of this chart is to note that the average magnitude of the standardized residuals does not change that much as a function across the fitted values.Due to the nature of this line, we can safely say that this model is still good enough to use effectively.  
+4) Residuals vs Leverage
+This chart can easily be looked at by seeing that there are no major influential cases in the model. We can see this by how small Cook's distance line is. All points are within Cook's distance line. Although some cases get close (i.e the point noted with 180), they would not cause a major change in the model if removed completely. 
+
+## Charts Recap
+After reviewing each chart and analyzing them, this mainly proves to use that linear regression is the correct approach to the data given. This model is the best fit for what we are looking to accomplish which is predicting a player's full season OBP based on their statistics through March and April. No major outliers exist that will affect the model's effectiveness and the error in the model is minimal. 
+
+## Recap Analysis
+
+Some of the shortcomings of this model has to do with only using 1 year as a baseline. The system needs to learn for year over year totals to predict more accurately. If we could bring in 2017, 2018, and other years it could give more accuracy based on the sample size. There is a ton of data available for the MLB to utilize, however reteaching the model each year can create a learning system to best predict results on who will excel inside the system to help the team late in the season or potential trade targets that will help get that team move ahead of the pack. 
+
+This was seen in Atlanta this year, one player could not replace Acuna. They went out and got Soler, Pederson, Rosario, and Duvall to make up the production in OBP, SLG, WRC (Weighted Runs Created). Using this model it could show if a player for the Phillies like Rhys Hoskins or Bryce Harer was unavailable, who should be a group of players to target and make up that value. 
+
+We can take deeper dives into players from this model and extrapolate over the years to see why Cody Bellinger struggled this season, or how a player like Austin Riley or Tyler O'Neill has become a household name to most baseball fans after their 2021 campaigns. Utilizing the data in the proper format to reach an attainable goal, use this to train players from Rookie Ball up through the MLB to create an uniform model of success. Modern dynasties in the Giants, Dodgers, Astros, Rays all have this scheme of using data to help grow player potential and harvest and winning culture should be looked at as a model to build from and we have the data to show that success and where it comes from. This is a start of what could turn into a powerful mechanism in a Human-AI relationship to forge a better path for the Philadelphia Phillies. 
